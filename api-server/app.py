@@ -1,7 +1,11 @@
 from fastapi import FastAPI
 import uvicorn
 
-app = FastAPI(title="API Server", version="0.1.0")
+app = FastAPI(
+    title="API Server",
+    version="0.1.0",
+    root_path="/api"
+)
 
 
 @app.get("/")
