@@ -2,24 +2,23 @@
 set -e
 
 echo "=== Updating system packages ==="
-sudo yum update -y
-sudo yum upgrade -y
+sudo dnf update -y
+sudo dnf upgrade -y
+
+sudo dnf -y install dnf-plugins-core
+
+sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo sed -i 's/$releasever/9/g' /etc/yum.repos.d/docker-ce.repo
+
 
 echo "=== Installing Docker ==="
-sudo yum install docker containerd git -y
+sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 echo "=== Enabling and starting Docker service ==="
 sudo systemctl enable docker.service --now
 
 echo "=== Adding current user to docker group ==="
 sudo usermod -a -G docker $USER
-
-echo "=== Installing Docker Compose (v2) ==="
-sudo curl -L https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) -o /usr/libexec/docker/cli-plugins/docker-compose
-sudo chmod +x /usr/libexec/docker/cli-plugins/docker-compose
-
-echo "=== Docker Compose version ==="
-/usr/libexec/docker/cli-plugins/docker-compose version || true
 
 echo "=== Verifying Docker installation ==="
 docker --version
