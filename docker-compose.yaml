@@ -1,0 +1,242 @@
+services:
+  redis:
+    image: redis:7.4.2-alpine
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: "app"
+      com.docker.compose.service: "cache"
+      maintainer: "DevOps"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      labels:
+        com.docker.compose.environment: "production"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "6379:6379"
+    networks:
+      application-network:
+        aliases:
+          - redis.local
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - application-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  api-server:
+    build: ./api-server
+    restart: unless-stopped
+    labels:
+      com.docker.compose.project: "app"
+      com.docker.compose.service: "api"
+      maintainer: "DevOps"
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+      labels:
+        com.docker.compose.environment: "production"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    environment:
+      POSTGRES_DB_URI: ${POSTGRES_DB_ASYNC_URI}
+
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+
+      REDIS_DB_URI: ${REDIS_DB_URI}
+      APPLICATION_SECRET_KEY: ${APPLICATION_SECRET_KEY}
+
+    ports:
+      - "8000:8000"
+    networks:
+      - application-network
+    volumes:
+      - ./api-server/templates:/usr/src/app/templates
+      - ./api-server/static:/usr/src/app/static
+
+  worker:
+    build:
+      context: ./api-server
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - redis
+    networks:
+      - application-network
+    environment:
+      POSTGRES_DB_URI: ${POSTGRES_DB_URI}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+
+
+  nginx-reverse-proxy:
+    image: nginx:latest
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf.template
+      - ./nginx/entrypoint.sh:/entrypoint.sh
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    depends_on:
+      - api-server
+      - next
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    networks:
+      - application-network
+  
+  nginx-ssl-reverse-proxy:
+    image: nginx:latest
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.ssl.conf:/etc/nginx/conf.d/default.conf.template
+      - ./nginx/entrypoint.sh:/entrypoint.sh
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    depends_on:
+      - api-server
+      - certbot
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    networks:
+      - application-network
+    
+  
+  certbot:
+    build: ./certbot
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      DOMAIN: ${DOMAIN}
+      EMAIL: ${EMAIL}
+  
+  next:
+    build: ./next
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./next/node_modules:/app/node_modules
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - application-network
+    depends_on:
+      - api-server
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/${POSTGRES_DATA_DIR:-postgres_data}
+    labels:
+      com.docker.compose.project: "app"
+      com.docker.compose.volume: "db-data"
+      backup: "required"
+
+networks:
+  application-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+          ip_range: 172.20.5.0/24
+          gateway: 172.20.0.1
+    labels:
+      com.docker.compose.project: "app"
+      com.docker.compose.network: "backend"

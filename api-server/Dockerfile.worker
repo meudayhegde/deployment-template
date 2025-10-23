@@ -1,0 +1,10 @@
+FROM python:3.14-alpine
+
+WORKDIR /usr/src/app
+
+COPY requirements.worker.txt ./
+RUN pip3 install --no-cache-dir -r requirements.worker.txt
+
+COPY . .
+
+CMD ["celery", "-A", "worker", "worker", "--loglevel=info"]
